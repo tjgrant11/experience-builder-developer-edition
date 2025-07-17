@@ -1,1 +1,745 @@
+/* ------------ add-graphics-as-text ------------------------
+Adds a widget to the map then select a layer and field to be used.
+When a selection is made on the map, a graphic is added to the map 
+that displays the value of the layer/field on the map.
+When printed, this graphic is applied to the output.
 
+This is meant as an example of widget development code 
+and likely requires further development before being
+used on any public facing webmaps
+
+The code for this widget was based partly on the code of the ESRI supplied example widgets.
+
+how-to-use-fields
+get-map-coordinates   
+
+These widgets are available for download from 
+https://github.com/Esri/arcgis-experience-builder-sdk-resources/tree/master/widgets
+---------------------------------------------------------- */
+//Widget.tsx--------------------------------------------------------------------
+/** @jsx jsx */
+import { React, jsx, type AllWidgetProps, DataSourceManager, type FeatureDataRecord, DataSourceComponent, type IMUseDataSource } from 'jimu-core'
+import { type IMConfig } from '../config'
+import { useEffect } from 'react'
+import { type QueryParams, type DataSource } from 'jimu-core/data-source'
+//Access map
+import { JimuMapViewComponent, type JimuMapView } from 'jimu-arcgis'
+import Point from 'esri/geometry/Point'
+import BCpoint from '@arcgis/core/geometry/Point'
+//Add graphics
+import Graphic from '@arcgis/core/Graphic'
+import GraphicsLayer from '@arcgis/core/layers/GraphicsLayer'
+import TextSymbol from '@arcgis/core/symbols/TextSymbol'
+import { useRef } from 'react'
+const { useState } = React
+// The load method will query records and save them in the data source instance to share them with widgets.
+enum QueryTypes {
+  Load = 'LOAD' 
+}
+
+const Widget = (props: AllWidgetProps<any>) => {
+  const [queryType, setQueryType] = useState<QueryTypes>(QueryTypes.Load)
+  //from graphic
+  const graphicsLayer = useRef(new GraphicsLayer());
+  let mapwidth = 0.0;
+  let mapheight = 0.0;
+  let graphicText = useRef('');
+  //User Selected Field 
+  const [selField, setSelField] = useState<string>('')
+
+  //Only re-render when one of the dependencies change
+  useEffect(() => {
+    if (queryType === QueryTypes.Load) {
+      return;
+    }
+  }, [queryType, props.useDataSources, useRef, graphicText]
+  )
+
+  //Modified code from howtousefields widget
+  //Get selected LotPlan as String to use in Graphic
+  const renderRecords = (records: FeatureDataRecord[]) => {
+    if (records.length > 0){
+      const data = records[0].getData()
+      const colName = props.useDataSources[0].fields[0]
+      //without using useEffect rather than useRef neither col or value are reflected in 'return'
+      setSelField(colName)  
+      if(data[colName]){
+        graphicText.current = data[colName]
+      }
+    }
+    //When selection removed..
+    if (records.length < 1){
+      setSelField('')
+      graphicText.current = ''
+      graphicsLayer.current.removeAll()
+    }
+    //TG modified empty return, but still need call from widget return to get 'records'
+    return ''
+  }
+
+  //Graphic code ------------------------------------------
+  const activeViewChangeHandler = (jmv: JimuMapView) => {
+    const currentGraphicsLayer = graphicsLayer.current
+    jmv.view.map.add(currentGraphicsLayer)  
+    //jmv.view.watch('extent', (evt) => {addGraphic()})
+    jmv.view.on('click', (evt) => {addGraphic()})
+    jmv.view.on('drag', (evt) => {addGraphic()})
+    jmv.view.on('mouse-wheel', (evt) => {addGraphic()})
+    //Create Text Graphic and set it as selected feature
+    const textSymbol = new TextSymbol({
+      text: '',
+      color: 'black',
+      haloColor: 'white',
+      haloSize: '1px',
+      font: {
+        size: 14
+      }
+    })
+    //Add the graphic to the map
+    function addGraphic(){
+      const extent = jmv.view.extent
+      let geographicPoint = new Point()
+      if (!extent) return
+      mapwidth = (extent.xmax - extent.xmin)
+      mapheight = (extent.ymax - extent.ymin)
+      //If portrait - pdf expands width
+      if (mapheight > mapwidth) {  
+        const bottomCentrePoint = new BCpoint({
+          x: (extent.xmin + extent.xmax) / 2,
+          y: (extent.ymin),
+          spatialReference: extent.spatialReference
+        })
+        geographicPoint = bottomCentrePoint
+        textSymbol.horizontalAlignment = 'center'
+        textSymbol.yoffset = 20
+      }
+      //If landscape - pdf expands height
+      if (mapheight < mapwidth) {
+        const bottomCentrePoint = new BCpoint({
+          x: (extent.xmin),
+          y: (extent.ymin + extent.ymax) / 2,
+          spatialReference: extent.spatialReference
+        })
+        geographicPoint = bottomCentrePoint
+        textSymbol.horizontalAlignment = 'left'
+        textSymbol.xoffset = 20
+        textSymbol.yoffset = 100
+      }
+      //Add graphic to map
+      textSymbol.text = (graphicText.current)
+      const graphic = new Graphic({
+        geometry: geographicPoint,
+        symbol: textSymbol
+      })
+      graphicsLayer.current.removeAll()
+      graphicsLayer.current.add(graphic)
+    }
+  }
+	//End Graphic code ------------------------------------------
+
+    return (
+    <div className='widget-setting-demo mt-2'>
+      <p>Selected Feature: {graphicText.current}</p>
+      <p>Field: {selField}</p>
+      {props.useMapWidgetIds && props.useMapWidgetIds.length === 1 && (
+      <JimuMapViewComponent useMapWidgetId={props.useMapWidgetIds[0]} onActiveViewChange={activeViewChangeHandler} />
+      )}
+      {
+        !props.useDataSources?.length
+          ? 'No selected data source'
+          : <div>
+            {
+              queryType === QueryTypes.Load &&
+              //Use the DataSourceComponent to load records.
+              //Please note, we don't set `outFields` since we have saved the selected fields to widgetJson.useDataSources in the settings.
+              <DataSourceComponent widgetId={props.id} useDataSource={props.useDataSources?.[0]} query={{ where: '1=1' } as QueryParams}>
+              {
+                ds =>
+                  <div className='query-results'>
+                    { renderRecords((ds.getRecords() as FeatureDataRecord[])) }
+                  </div>
+              }
+              </DataSourceComponent>
+            }
+          </div>
+      }
+    </div>
+  )
+}
+
+export default Widget
+
+async function createDataSource (useDataSource: IMUseDataSource): Promise<DataSource> {
+  if (!useDataSource) {
+    return null
+  }
+
+  // We recommend to get the data source instance whenever you need it, instead saving it in state or other variables.
+  // It prevents access to the data source after it has been destroyed.
+  return DataSourceManager.getInstance().getDataSource(useDataSource.dataSourceId) || (await DataSourceManager.getInstance().createDataSourceByUseDataSource(useDataSource))
+}
+
+
+//Settings.tsx--------------------------------------------------------------------------
+import { DataSourceTypes, type IMFieldSchema, Immutable, React, type UseDataSource } from 'jimu-core'
+import type { AllWidgetSettingProps } from 'jimu-for-builder'
+import { DataSourceSelector, FieldSelector } from 'jimu-ui/advanced/data-source-selector'
+import type { IMConfig } from '../config'
+import { MapWidgetSelector } from 'jimu-ui/advanced/setting-components'
+
+const SUPPORTED_TYPES = Immutable([DataSourceTypes.FeatureLayer])
+
+const Setting = (props: AllWidgetSettingProps<any>) => {
+  const onDataSourceChange = (useDataSources: UseDataSource[]) => {
+    // Save the selected data sources to widget json.
+    props.onSettingChange({
+      id: props.id,
+      useDataSources
+    })
+  }
+
+  const onFieldsChange = (fields: IMFieldSchema[]) => {
+    const useDataSource = props.useDataSources[0].set('fields', fields?.map(f => f.jimuName)).asMutable({ deep: true })
+    // Save the selected fields to widget json.
+    props.onSettingChange({
+      id: props.id,
+      useDataSources: [useDataSource]
+    })
+  }
+
+  const onMapWidgetSelected = (useMapWidgetIds: string[]) => {
+    props.onSettingChange({
+      id: props.id,
+      useMapWidgetIds: useMapWidgetIds
+    })
+  }
+
+  return <div className='widget-setting-demo jimu-widget mt-2 mx-2'>
+    <div>Data source: </div>
+    <DataSourceSelector widgetId={props.id} useDataSources={props.useDataSources} types={SUPPORTED_TYPES} onChange={onDataSourceChange} mustUseDataSource />
+    <div className="widget-setting-demo">
+    <MapWidgetSelector useMapWidgetIds={props.useMapWidgetIds} onSelect={onMapWidgetSelected} />
+    </div>
+    <div className='mt-3'>Fields: </div>
+    <FieldSelector useDataSources={props.useDataSources} isMultiple onChange={onFieldsChange} selectedFields={props.useDataSources?.[0].fields} />
+    <br />
+  </div>
+}
+
+export default Setting
+
+
+
+//Cleaner version of above code for use in 'strict' mode
+/* eslint-disable no-useless-return */
+/* eslint-disable @typescript-eslint/no-unused-vars */
+/** @jsx jsx */
+import { React, jsx, type AllWidgetProps, DataSourceManager, type FeatureDataRecord, DataSourceComponent, type IMUseDataSource } from 'jimu-core'
+import { useEffect, useRef } from 'react'
+import { type QueryParams, type DataSource } from 'jimu-core/data-source'
+//Access map
+import { JimuMapViewComponent, type JimuMapView } from 'jimu-arcgis'
+import Point from 'esri/geometry/Point'
+import BCpoint from '@arcgis/core/geometry/Point'
+//Add graphics
+import Graphic from '@arcgis/core/Graphic'
+import GraphicsLayer from '@arcgis/core/layers/GraphicsLayer'
+import TextSymbol from '@arcgis/core/symbols/TextSymbol'
+const { useState } = React
+// The load method will query records and save them in the data source instance to share them with widgets.
+enum QueryTypes {
+  Load = 'LOAD'
+}
+
+const Widget = (props: AllWidgetProps<any>) => {
+  const [queryType, setQueryType] = useState<QueryTypes>(QueryTypes.Load)
+  //from graphic
+  const graphicsLayer = useRef(new GraphicsLayer())
+  let mapwidth = 0.0
+  let mapheight = 0.0
+  // eslint-disable-next-line prefer-const
+  let graphicText = useRef('')
+  //User Selected Field
+  const [selField, setSelField] = useState<string>('')
+
+  //Only re-render when one of the dependencies change
+  useEffect(() => {
+    if (queryType === QueryTypes.Load) {
+      return
+    }
+  }, [queryType, props.useDataSources, graphicText]
+  )
+
+  //Modified code from howtousefields widget
+  //Get selected LotPlan as String to use in Graphic
+  const renderRecords = (records: FeatureDataRecord[]) => {
+    if (records.length > 0) {
+      const data = records[0].getData()
+      const colName = props.useDataSources[0].fields[0]
+      //without using useEffect rather than useRef neither col or value are reflected in 'return'
+      setSelField(colName)
+      if (data[colName]) {
+        graphicText.current = data[colName]
+      }
+    }
+    //When selection removed..
+    if (records.length < 1) {
+      setSelField('')
+      graphicText.current = ''
+      graphicsLayer.current.removeAll()
+    }
+    //Modified empty return, but still need call from widget return to get 'records'
+    return ''
+  }
+
+  //Graphic code ------------------------------------------
+  const activeViewChangeHandler = (jmv: JimuMapView) => {
+    const currentGraphicsLayer = graphicsLayer.current
+    jmv.view.map.add(currentGraphicsLayer)
+    //jmv.view.watch('extent', (evt) => {addGraphic()})
+    jmv.view.on('click', (evt) => { addGraphic() })
+    jmv.view.on('drag', (evt) => { addGraphic() })
+    jmv.view.on('mouse-wheel', (evt) => { addGraphic() })
+    //Create Text Graphic and set it as selected feature
+    const textSymbol = new TextSymbol({
+      text: '',
+      color: 'black',
+      haloColor: 'white',
+      haloSize: '1px',
+      font: {
+        size: 14
+      }
+    })
+    //Add the graphic to the map
+    function addGraphic () {
+      const extent = jmv.view.extent
+      let geographicPoint = new Point()
+      if (!extent) return
+      mapwidth = (extent.xmax - extent.xmin)
+      mapheight = (extent.ymax - extent.ymin)
+      //If portrait - pdf expands width
+      if (mapheight > mapwidth) {
+        const bottomCentrePoint = new BCpoint({
+          x: (extent.xmin + extent.xmax) / 2,
+          y: (extent.ymin),
+          spatialReference: extent.spatialReference
+        })
+        geographicPoint = bottomCentrePoint
+        textSymbol.horizontalAlignment = 'center'
+        textSymbol.yoffset = 20
+      }
+      //If landscape - pdf expands height
+      if (mapheight < mapwidth) {
+        const bottomCentrePoint = new BCpoint({
+          x: (extent.xmin),
+          y: (extent.ymin + extent.ymax) / 2,
+          spatialReference: extent.spatialReference
+        })
+        geographicPoint = bottomCentrePoint
+        textSymbol.horizontalAlignment = 'left'
+        textSymbol.xoffset = 20
+        textSymbol.yoffset = 100
+      }
+      //Add graphic to map
+      textSymbol.text = (graphicText.current)
+      const graphic = new Graphic({
+        geometry: geographicPoint,
+        symbol: textSymbol
+      })
+      graphicsLayer.current.removeAll()
+      graphicsLayer.current.add(graphic)
+    }
+  }//End Graphic code ------------------------------------------
+
+  return (
+    <div className='widget-setting-demo mt-2'>
+      <p>Selected Feature: {graphicText.current}</p>
+      <p>Field: {selField}</p>
+      {props.useMapWidgetIds && props.useMapWidgetIds.length === 1 && (
+      <JimuMapViewComponent useMapWidgetId={props.useMapWidgetIds[0]} onActiveViewChange={activeViewChangeHandler} />
+      )}
+      {
+        !props.useDataSources?.length
+          ? 'No selected data source'
+          : <div>
+            {
+              queryType === QueryTypes.Load &&
+              //Use the DataSourceComponent to load records.
+              //Please note, we don't set `outFields` since we have saved the selected fields to widgetJson.useDataSources in the settings.
+              <DataSourceComponent widgetId={props.id} useDataSource={props.useDataSources?.[0]} query={{ where: '1=1' } as QueryParams}>
+              {
+                ds =>
+                  <div className='query-results'>
+                    { renderRecords((ds.getRecords() as FeatureDataRecord[])) }
+                  </div>
+              }
+              </DataSourceComponent>
+            }
+          </div>
+      }
+    </div>
+  )
+}
+
+export default Widget
+
+async function createDataSource (useDataSource: IMUseDataSource): Promise<DataSource> {
+  if (!useDataSource) {
+    return null
+  }
+
+  // We recommend to get the data source instance whenever you need it, instead saving it in state or other variables.
+  // It prevents access to the data source after it has been destroyed.
+  return DataSourceManager.getInstance().getDataSource(useDataSource.dataSourceId) || (await DataSourceManager.getInstance().createDataSourceByUseDataSource(useDataSource))
+}
+
+
+
+
+//OLDER CODE
+
+
+
+/** @jsx jsx */
+import { React, jsx, type AllWidgetProps, DataSourceManager, type FeatureDataRecord, DataSourceComponent, type IMUseDataSource } from 'jimu-core'
+import { type IMConfig } from '../config'
+import { useEffect } from 'react'
+import { type QueryParams, type DataSource } from 'jimu-core/data-source'
+//Access map
+import { JimuMapViewComponent, type JimuMapView } from 'jimu-arcgis'
+//??? what is difference ???
+import Point from 'esri/geometry/Point'
+import BCpoint from '@arcgis/core/geometry/Point'
+//Add graphics
+import Graphic from '@arcgis/core/Graphic'
+import GraphicsLayer from '@arcgis/core/layers/GraphicsLayer'
+import TextSymbol from '@arcgis/core/symbols/TextSymbol'
+import { useRef } from 'react'
+import { DataSourceItem } from 'jimu-ui/advanced/data-source-selector'
+
+const { useState } = React
+enum QueryTypes {
+  Load = 'LOAD' // The load method will query records and save them in the data source instance to share them with widgets.
+}
+
+const Widget = (props: AllWidgetProps<any>) => {
+  const [queryType, setQueryType] = useState<QueryTypes>(QueryTypes.Load)
+  //from graphic
+  const graphicsLayer = useRef(new GraphicsLayer());
+  let mapwidth = 0.0;
+  let mapheight = 0.0;
+  let graphicText = useRef('');
+  //let selectedField = useRef('');
+  const [lanpor, setlanpor] = useState<string>('')
+  //Test variables
+  const [BClatitude, setBCLatitude] = useState<string>('');
+  const [BClongitude, setBCLongitude] = useState<string>('');
+
+  //Only re-render when one of the dependencies change
+  useEffect(() => {
+    if (queryType === QueryTypes.Load) {
+      return;
+    }
+  }, [queryType, props.useDataSources, useRef,graphicText]
+  )
+
+  //From howtousefields  
+  //Get selected LotPlan as String to use in Graphic //colName + ': ' + data[colName]
+  const renderRecords = (records: FeatureDataRecord[]) => {
+    if (records.length > 0){
+      const data = records[0].getData()
+      const colName = props.useDataSources[0].fields[0]
+      //without using useEffect rather than useRef neither col or value are reflected in 'return'
+      setlanpor(colName)  
+      if(data[colName]){
+        graphicText.current = data[colName]
+      }
+    }
+    //When selection removed..
+    if (records.length < 1){
+      setlanpor('')
+      graphicText.current = ''
+      graphicsLayer.current.removeAll()
+    }
+    //TG modified empty return, but still need call from widget return to get 'records'
+    return ''
+  }
+
+  //Graphic code ------------------------------------------
+  const activeViewChangeHandler = (jmv: JimuMapView) => {
+    const currentGraphicsLayer = graphicsLayer.current
+    jmv.view.map.add(currentGraphicsLayer)  
+    //jmv.view.watch('extent', evt => {addGraphic()})
+    jmv.view.on('click', (evt) => {addGraphic()})
+    jmv.view.on('drag', (evt) => {addGraphic()})
+    jmv.view.on('mouse-wheel', (evt) => {addGraphic()})
+    //Create Text Graphic and set it as selected feature
+    const textSymbol = new TextSymbol({
+      text: '',
+      color: 'black',
+      haloColor: 'white',
+      haloSize: '1px',
+      font: {
+        size: 14
+      }
+    })
+    //Add the graphic to the map
+    function addGraphic(){
+      const extent = jmv.view.extent
+      let geographicPoint = new Point()
+      if (!extent) return
+      mapwidth = (extent.xmax - extent.xmin)
+      mapheight = (extent.ymax - extent.ymin)
+      //If portrait - pdf expands width
+      if (mapheight > mapwidth) {  
+        const bottomCentrePoint = new BCpoint({
+          x: (extent.xmin + extent.xmax) / 2,
+          y: (extent.ymin),
+          spatialReference: extent.spatialReference
+        })
+        geographicPoint = bottomCentrePoint
+        textSymbol.yoffset = 10
+      }
+      //If landscape - pdf expands height
+      if (mapheight < mapwidth) {
+        const bottomCentrePoint = new BCpoint({
+          x: (extent.xmin),
+          y: (extent.ymin + extent.ymax) / 2,
+          spatialReference: extent.spatialReference
+        })
+        geographicPoint = bottomCentrePoint
+        textSymbol.xoffset = 20
+      }
+      //Add graphic to map
+      textSymbol.text = (graphicText.current)
+      const graphic = new Graphic({
+        geometry: geographicPoint,
+        symbol: textSymbol
+      })
+      graphicsLayer.current.removeAll()
+      graphicsLayer.current.add(graphic)
+    }
+  }
+	//End Graphic code ------------------------------------------
+
+    return (
+    <div className='widget-setting-demo mt-2'>
+      <p>Selected Feature: {graphicText.current}</p>
+      <p>Field: {lanpor}</p>
+      {props.useMapWidgetIds && props.useMapWidgetIds.length === 1 && (
+      <JimuMapViewComponent useMapWidgetId={props.useMapWidgetIds[0]} onActiveViewChange={activeViewChangeHandler} />
+      )}
+      {
+        !props.useDataSources?.length
+          ? 'No selected data source'
+          : <div>
+            {
+              queryType === QueryTypes.Load &&
+              //Use the DataSourceComponent to load records.
+              //Please note, we don't set `outFields` since we have saved the selected fields to widgetJson.useDataSources in the settings.
+              <DataSourceComponent widgetId={props.id} useDataSource={props.useDataSources?.[0]} query={{ where: '1=1' } as QueryParams}>
+              {
+                ds =>
+                  <div className='query-results'>
+                    { renderRecords((ds.getRecords() as FeatureDataRecord[])) }
+                  </div>
+              }
+              </DataSourceComponent>
+            }
+          </div>
+      }
+    </div>
+  )
+}
+
+export default Widget
+
+async function createDataSource (useDataSource: IMUseDataSource): Promise<DataSource> {
+  if (!useDataSource) {
+    return null
+  }
+
+  // We recommend to get the data source instance whenever you need it, instead saving it in state or other variables.
+  // It prevents access to the data source after it has been destroyed.
+  return DataSourceManager.getInstance().getDataSource(useDataSource.dataSourceId) || (await DataSourceManager.getInstance().createDataSourceByUseDataSource(useDataSource))
+}
+
+
+
+
+
+
+
+
+
+
+
+
+//OLDER CODE USED
+
+
+/** @jsx jsx */
+import { React, jsx, type AllWidgetProps, DataSourceManager, type FeatureDataRecord, DataSourceComponent, type IMUseDataSource } from 'jimu-core'
+import { type IMConfig } from '../config'
+import { useEffect } from 'react'
+import { type QueryParams, type DataSource } from 'jimu-core/data-source'
+//Access map
+import { JimuMapViewComponent, type JimuMapView } from 'jimu-arcgis'
+//??? what is difference ???
+import Point from 'esri/geometry/Point'
+import BCpoint from '@arcgis/core/geometry/Point'
+//Add graphics
+import Graphic from '@arcgis/core/Graphic'
+import GraphicsLayer from '@arcgis/core/layers/GraphicsLayer'
+import TextSymbol from '@arcgis/core/symbols/TextSymbol'
+import { useRef } from 'react'
+
+const { useState } = React
+enum QueryTypes {
+  Load = 'LOAD' // The load method will query records and save them in the data source instance to share them with widgets.
+}
+
+const Widget = (props: AllWidgetProps<any>) => {
+  const [queryType, setQueryType] = useState<QueryTypes>(QueryTypes.Load)
+  //from graphic
+  const graphicsLayer = useRef(new GraphicsLayer());
+  let mapwidth = 0.0;
+  let mapheight = 0.0;
+  let graphicText = useRef('ttt');
+  let selectedField = useRef('');
+  const [lanpor, setlanpor] = useState<string>('')
+  //Test variables
+  const [BClatitude, setBCLatitude] = useState<string>('');
+  const [BClongitude, setBCLongitude] = useState<string>('');
+
+  //Only re-render when one of the dependencies change
+  useEffect(() => {
+    if (queryType === QueryTypes.Load) {
+      return;
+    }
+  }, [queryType, props.useDataSources, useRef, graphicText]
+  )
+
+  //From howtousefields  
+  //Get selected LotPlan as String to use in Graphic //colName + ': ' + data[colName]
+  const renderRecords = (records: FeatureDataRecord[]) => {
+    if (records.length > 0){
+      const data = records[0].getData()
+      const colName = props.useDataSources[0].fields[0]
+      //without using useEffect rather than useRef neither col or value are reflected in 'return'
+      setlanpor(colName)  
+      if(data[colName]){
+        graphicText.current = data[colName]
+      }
+    }
+    //When selection removed..
+    if (records.length < 1){
+      graphicText.current = '',
+      selectedField.current = '',
+      graphicsLayer.current.removeAll()
+    }
+    //TG modified empty return, but still need call from widget return to get 'records'
+    return ''
+  }
+
+  //Graphic code ------------------------------------------
+  const activeViewChangeHandler = (jmv: JimuMapView) => {
+    const currentGraphicsLayer = graphicsLayer.current
+    jmv.view.map.add(currentGraphicsLayer)
+    jmv.view.watch('extent', evt => {addGraphic()})
+    //jmv.view.on('click', (evt) => {addGraphic()})
+    //jmv.view.on('drag', (evt) => {addGraphic()})
+    //jmv.view.on('mouse-wheel', (evt) => {addGraphic()})
+    //Add the graphic to the map
+    function addGraphic(){
+      const extent = jmv.view.extent
+      let geographicPoint = new Point()
+      if (!extent) return
+      mapwidth = (extent.xmax - extent.xmin)
+      mapheight = (extent.ymax - extent.ymin)
+      //if (mapheight > mapwidth) { setlanpor('portrait') }
+      //if (mapheight < mapwidth) { setlanpor('landscape') }
+      //If portrait - pdf expands width
+      if (mapheight > mapwidth) {
+        const bottomCentrePoint = new BCpoint({
+          x: (extent.xmin + extent.xmax) / 2,
+          y: (extent.ymin) * 0.99999,
+          spatialReference: extent.spatialReference
+        })
+        geographicPoint = bottomCentrePoint
+      }
+      //If landscape - pdf expands height     y: (extent.ymin + extent.ymax) / 2,
+      //y: (((extent.ymin + extent.ymax) / 2) - ((extent.xmax - extent.xmin) / 2)) * 0.999975,
+      if (mapheight < mapwidth) {
+        const bottomCentrePoint = new BCpoint({
+          x: (extent.xmin + extent.xmax) / 2,
+          y: ((extent.ymin + extent.ymax) / 2),
+          spatialReference: extent.spatialReference
+        })
+        geographicPoint = bottomCentrePoint
+      }
+      //Check label position
+      //setBCLatitude(geographicPoint.latitude.toFixed(5))
+      //setBCLongitude(geographicPoint.longitude.toFixed(5))
+      //Create Text Graphic and set it as selected feature
+      const textSymbol = new TextSymbol({
+        text: '',
+        color: 'black',
+        haloColor: 'white',
+        haloSize: '1px',
+        font: {
+          size: 14
+        }
+      })
+      textSymbol.text = (selectedField.current + ' ' + graphicText.current)
+      const graphic = new Graphic({
+        geometry: geographicPoint,
+        symbol: textSymbol
+      })
+      graphicsLayer.current.removeAll()
+      graphicsLayer.current.add(graphic)
+    }
+  }
+	//End Graphic code ------------------------------------------
+
+    return (
+    <div className='widget-setting-demo mt-2'>
+      <p>Selected Feature: {graphicText.current}</p>
+      <p>Field: {lanpor}</p>
+      {props.useMapWidgetIds && props.useMapWidgetIds.length === 1 && (
+      <JimuMapViewComponent useMapWidgetId={props.useMapWidgetIds[0]} onActiveViewChange={activeViewChangeHandler} />
+      )}
+      {
+        !props.useDataSources?.length
+          ? 'No selected data source'
+          : <div>
+            {
+              queryType === QueryTypes.Load &&
+              //Use the DataSourceComponent to load records.
+              //Please note, we don't set `outFields` since we have saved the selected fields to widgetJson.useDataSources in the settings.
+              <DataSourceComponent widgetId={props.id} useDataSource={props.useDataSources?.[0]} query={{ where: '1=1' } as QueryParams}>
+              {
+                ds =>
+                  <div className='query-results'>
+                    { renderRecords((ds.getRecords() as FeatureDataRecord[])) }
+                  </div>
+              }
+              </DataSourceComponent>
+            }
+          </div>
+      }
+    </div>
+  )
+}
+
+export default Widget
+
+async function createDataSource (useDataSource: IMUseDataSource): Promise<DataSource> {
+  if (!useDataSource) {
+    return null
+  }
+
+  // We recommend to get the data source instance whenever you need it, instead saving it in state or other variables.
+  // It prevents access to the data source after it has been destroyed.
+  return DataSourceManager.getInstance().getDataSource(useDataSource.dataSourceId) || (await DataSourceManager.getInstance().createDataSourceByUseDataSource(useDataSource))
+}
